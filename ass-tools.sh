@@ -41,14 +41,19 @@ badass() {
     return 1
   fi
 
-  echo "🧠 Generating grep command for: $query" >&2
+  echo "🧠 Generating search command for: $query" >&2
 
   local grep_cmd
-  grep_cmd=$(claude -p "Output ONLY a single bash grep command (no explanation, no markdown) to search the current directory recursively for content relevant to answering: \"$query\". Use grep -rIi with appropriate flags and pattern.")
+  grep_cmd=$(claude -p "You are a command generator. Output ONLY a single grep command on one line. No explanation, no markdown, no backticks, no other text. The command must start with 'grep'. Search the current directory recursively for content relevant to: \"$query\". Use grep -rIi with appropriate flags and pattern." | head -1)
+
+  if [[ "$grep_cmd" != grep* ]]; then
+    echo "⚠️  Failed to generate a search command" >&2
+    return 1
+  fi
 
   echo "⚙️  Running: $grep_cmd" >&2
 
-  eval "$(guardrails "$grep_cmd")" \
+  guardrails "$grep_cmd" | bash 2>/dev/null \
     | claude -p "Aggregate and summarize the grep results below to answer this question: \"$query\". Be concise."
 }
 
@@ -79,19 +84,19 @@ hardass() {
     echo "🔄 Iteration $iter/$max_iter — Query: \"$current_query\"" >&2
 
     local grep_cmd
-    grep_cmd=$(claude -p "Output ONLY a single bash grep command (no explanation, no markdown) to search the current directory recursively for content relevant to answering: \"$current_query\". Use grep -rIi with appropriate flags and pattern.")
+    grep_cmd=$(claude -p "You are a command generator. Output ONLY a single grep command on one line. No explanation, no markdown, no backticks, no other text. The command must start with 'grep'. Search the current directory recursively for content relevant to: \"$current_query\". Use grep -rIi with appropriate flags and pattern." | head -1)
 
-    echo "⚙️  Running: $grep_cmd" >&2
+    if [[ "$grep_cmd" != grep* ]]; then
+      echo "⚠️  Failed to generate a search command" >&2
+      ((iter++))
+      continue
+    fi
 
     local raw_results
-    raw_results=$(eval "$(guardrails "$grep_cmd")")
+    raw_results=$(guardrails "$grep_cmd" | bash 2>/dev/null)
 
     answer=$(echo "$raw_results" \
       | claude -p "Aggregate and summarize the grep results below to answer this question: \"$current_query\". Be concise. If the results are empty or insufficient, say so explicitly.")
-
-    echo "📝 Answer candidate:" >&2
-    echo "$answer" >&2
-    echo "" >&2
 
     verdict=$(claude -p "You are a strict QA judge. The user asked: \"$query\".
 The search query used was: \"$current_query\".
@@ -103,9 +108,6 @@ Does this answer fully and correctly address the original question?
 Reply with EXACTLY one of:
   PASS — if the answer is complete and correct
   FAIL: <improved search query> — if not, provide a better search query after the colon")
-
-    echo "🔎 Verdict: $verdict" >&2
-    echo "" >&2
 
     if [[ "$verdict" == PASS* ]]; then
       echo "✅ Verified after $iter iteration(s)." >&2
@@ -146,20 +148,20 @@ kickass() {
 
   local tmpdir
   tmpdir=$(mktemp -d)
-  trap 'rm -rf "$tmpdir"' RETURN
 
   dumbass "$query" 2>/dev/null > "$tmpdir/dumb" &
   local pid_dumb=$!
   badass "$query" 2>/dev/null > "$tmpdir/bad" &
   local pid_bad=$!
-  smartass "$query" 2>/dev/null > "$tmpdir/smart" &
-  local pid_smart=$!
+  hardass "$query" 2>/dev/null > "$tmpdir/hard" &
+  local pid_hard=$!
 
-  wait $pid_dumb $pid_bad $pid_smart
+  wait $pid_dumb $pid_bad $pid_hard
 
   echo "🏆 Picking the best answer..." >&2
 
-  claude -p "You were asked: \"$query\"
+  local result
+  result=$(claude -p "You were asked: \"$query\"
 Three different search strategies each produced an answer. Pick the best one and return it, optionally improved by combining insights from the others.
 
 --- DUMBASS (brute-force grep) ---
@@ -168,8 +170,11 @@ $(cat "$tmpdir/dumb")
 --- BADASS (smart grep) ---
 $(cat "$tmpdir/bad")
 
---- SMARTASS (no grep, direct) ---
-$(cat "$tmpdir/smart")"
+--- HARDASS (verified grep loop) ---
+$(cat "$tmpdir/hard")")
+
+  rm -rf "$tmpdir"
+  echo "$result"
 }
 
 # -----------------------------------------------------------------------------
